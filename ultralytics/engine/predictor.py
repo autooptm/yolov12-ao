@@ -30,6 +30,7 @@ Usage - formats:
                               yolov8n_ncnn_model         # NCNN
 """
 
+import os
 import platform
 import re
 import threading
@@ -47,6 +48,62 @@ from ultralytics.utils import DEFAULT_CFG, LOGGER, MACOS, WINDOWS, callbacks, co
 from ultralytics.utils.checks import check_imgsz, check_imshow
 from ultralytics.utils.files import increment_path
 from ultralytics.utils.torch_utils import select_device, smart_inference_mode
+
+#
+#
+_AO_FAST = os.environ.get("YOLO_AO_OPT_1", "1").strip().lower()
+_AO_OPT_5 = _AO_FAST not in {"0", "false", "off", ""}
+_AO_OPT_6 = _AO_FAST in {"half", "fp16"}
+_AO_OPT_7 = int(os.environ.get("YOLO_AO_OPT_2", "6"))
+_AO_MIN_HITS = int(os.environ.get("YOLO_AO_OPT_3", "3"))
+
+
+class _AoOpt4(torch.nn.Module):
+
+    def __init__(self, model, min_hits=3, opt_8=6):
+        super().__init__()
+        self.model = model
+        self.graphs = {}
+        self.hits = {}
+        self.min_hits = min_hits
+        self.opt_8 = opt_8
+        self.pool = None
+
+    def _forward(self, im):
+        y = self.model(im)
+        return y[0] if isinstance(y, (list, tuple)) else y
+
+    def _opt_9(self, im):
+        opt_10 = im.clone()
+        side = torch.cuda.Stream()
+        side.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(side):
+            for _ in range(3):
+                self._forward(opt_10)
+        torch.cuda.current_stream().wait_stream(side)
+        graph = torch.cuda.CUDAGraph()
+        if self.pool is None:
+            with torch.cuda.graph(graph):
+                opt_12 = self._forward(opt_10)
+            self.pool = graph.pool()
+        else:
+            with torch.cuda.graph(graph, pool=self.pool):
+                opt_12 = self._forward(opt_10)
+        return opt_10, graph, opt_12
+
+    def forward(self, im):
+        key = tuple(im.shape)
+        entry = self.graphs.get(key)
+        if entry is None:
+            self.hits[key] = seen = self.hits.get(key, 0) + 1
+            if seen < self.min_hits or len(self.graphs) >= self.opt_8:
+                return self._forward(im)
+            entry = self.graphs[key] = self._opt_9(im)
+        opt_10, graph, opt_12 = entry
+        opt_10.copy_(im)
+        graph.replay()
+        return opt_12
+# ---------------------------------------------------------------------------- #
 
 STREAM_WARNING = """
 WARNING ⚠️ inference results will accumulate in RAM unless `stream=True` is passed, causing potential out-of-memory
@@ -110,6 +167,7 @@ class BasePredictor:
         self.transforms = None
         self.callbacks = _callbacks or callbacks.get_default_callbacks()
         self.txt_path = None
+        self._ao_opt_11 = None
         self._lock = threading.Lock()  # for automatic thread-safe inference
         callbacks.add_integration_callbacks(self)
 
@@ -140,6 +198,8 @@ class BasePredictor:
             if self.args.visualize and (not self.source_type.tensor)
             else False
         )
+        if self._ao_opt_11 is not None and not (visualize or self.args.augment or self.args.embed or args or kwargs):
+            return self._ao_opt_11(im)
         return self.model(im, augment=self.args.augment, visualize=visualize, embed=self.args.embed, *args, **kwargs)
 
     def pre_transform(self, im):
@@ -305,9 +365,12 @@ class BasePredictor:
 
     def setup_model(self, model, verbose=True):
         """Initialize YOLO model with given parameters and set it to evaluation mode."""
+        device = select_device(self.args.device, verbose=verbose)
+        if _AO_OPT_6 and not self.args.half and device.type == "cuda":
+            self.args.half = True
         self.model = AutoBackend(
             weights=model or self.args.model,
-            device=select_device(self.args.device, verbose=verbose),
+            device=device,
             dnn=self.args.dnn,
             data=self.args.data,
             fp16=self.args.half,
@@ -318,6 +381,14 @@ class BasePredictor:
 
         self.device = self.model.device  # update device
         self.args.half = self.model.fp16  # update half
+        self._ao_opt_11 = (
+            _AoOpt4(self.model.model, _AO_MIN_HITS, _AO_OPT_7)
+            if _AO_OPT_5
+            and self.args.task == "detect"  # segment/pose/obb read preds[1]; the graph returns preds[0]
+            and getattr(self.model, "pt", False)
+            and self.device.type == "cuda"
+            else None
+        )
         self.model.eval()
 
     def write_results(self, i, p, im, s):

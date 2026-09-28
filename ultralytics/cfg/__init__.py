@@ -1,5 +1,6 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 
+import os
 import shutil
 import subprocess
 import sys
@@ -980,7 +981,16 @@ def entrypoint(debug=""):
             LOGGER.warning(f"WARNING ⚠️ 'format' argument is missing. Using default 'format={overrides['format']}'.")
 
     # Run command in python
-    getattr(model, mode)(**overrides)  # default args from model
+    if mode in {"predict", "track"} and os.environ.get("YOLO_AO_OPT_1", "1").strip().lower() not in {
+        "0",
+        "false",
+        "off",
+        "",
+    }:
+        for _ in getattr(model, mode)(stream=True, **overrides):
+            pass
+    else:
+        getattr(model, mode)(**overrides)  # default args from model
 
     # Show help
     LOGGER.info(f"💡 Learn more at https://docs.ultralytics.com/modes/{mode}")

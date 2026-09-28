@@ -1,3 +1,60 @@
+<div align="center">
+  <a href="https://autooptm.com"><img src=".autooptm/logo.png" width="96" alt="AutoOptm"></a>
+
+  <h1>YOLOv12 · optimized by <a href="https://autooptm.com">AutoOptm</a></h1>
+
+  <p><b>2.23x faster end to end</b> on the command below, output verified against the stock program.</p>
+
+  <p>
+    <a href="https://autooptm.com"><img alt="speedup" src="https://img.shields.io/badge/end--to--end-2.23x-2ea44f"></a>
+    <a href="https://github.com/sunsmarterjie/yolov12/commit/01a22c0603e0eaa6d9bd62120a391e744d92cea2"><img alt="base" src="https://img.shields.io/badge/upstream-01a22c0603e0-blue"></a>
+    <img alt="card" src="https://img.shields.io/badge/measured%20on-RTX%204090-lightgrey">
+  </p>
+</div>
+
+> This is a fork of [sunsmarterjie/yolov12](https://github.com/sunsmarterjie/yolov12) at commit
+> [`01a22c0603e0`](https://github.com/sunsmarterjie/yolov12/commit/01a22c0603e0eaa6d9bd62120a391e744d92cea2) with the AutoOptm patch applied on top.
+> The optimisation was found, measured and verified automatically by [AutoOptm](https://autooptm.com);
+> the patch is also kept at [`.autooptm/autooptm.patch`](.autooptm/autooptm.patch).
+
+## The result
+
+| | |
+|---|---|
+| **Command** | `python ultralytics/cfg/__init__.py predict model=yolov12n.pt source=data/val2017 imgsz=640 device=0 save=False verbose=False` |
+| **Entry point** | `ultralytics/cfg/__init__.py` |
+| **Unit measured** | one COCO val2017 image: read and decode from disk → letterbox → YOLOv12-N detection → NMS → boxes rescaled to the original image (with `save=False` nothing is written) |
+| **Before (stock)** | 15.9 ms per unit (50.9 s for the timed loop over 3,000 images) |
+| **After (this tree, all switches default ON)** | 5.5 ms per unit (22.8 s for the timed loop over the same 3,000 images; the loop time also carries a one-time warm-up for each new image shape) |
+| **Speedup** | **2.23x** end to end on RTX 4090, noise floor of the host 0.3% |
+| **Output** | detections (boxes, scores, classes) bit-identical to the stock program's (max abs diff 0, MSE 0), verified on the 400 pinned images and on a held-out set of 24 images at two image shapes the optimiser never saw |
+
+### What changed
+
+| File | Where | Gain |
+|---|---|---|
+| `ultralytics/engine/predictor.py` | BasePredictor.setup_model() / inference(), new helper class above BasePredictor | 2.78x (together with `tal.py` below) |
+| `ultralytics/utils/tal.py` | make_anchors() | 1.03x (alone) |
+| `ultralytics/cfg/__init__.py` | entrypoint() -- the predict/track call | not measured alone |
+
+## Reproduce
+
+```bash
+git clone https://github.com/autooptm/yolov12-ao.git
+cd yolov12-ao
+# set up exactly as upstream documents (the yolov12n.pt release weights, COCO val2017 images in data/val2017), then:
+python ultralytics/cfg/__init__.py predict model=yolov12n.pt source=data/val2017 imgsz=640 device=0 save=False verbose=False
+```
+
+The diff against upstream is one commit: `git log -1 -p` shows it, and
+`git diff 01a22c0603e0` is the same patch as `.autooptm/autooptm.patch`.
+
+---
+
+<div align="center"><sub>Optimized by <a href="https://autooptm.com">AutoOptm</a> — point it at a repository, get back a verified speedup and the patch.</sub></div>
+
+---
+
 
 
 <div align="center">

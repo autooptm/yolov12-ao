@@ -1,5 +1,7 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 
+import os
+
 import torch
 import torch.nn as nn
 
@@ -330,8 +332,19 @@ class RotatedTaskAlignedAssigner(TaskAlignedAssigner):
         return (ap_dot_ab >= 0) & (ap_dot_ab <= norm_ab) & (ap_dot_ad >= 0) & (ap_dot_ad <= norm_ad)  # is_in_box
 
 
+_OPT_13 = {}
+# YOLO_AO_OPT_1=0 restores the shipped path exactly, here as everywhere else.
+_AO_OPT_14 = os.environ.get("YOLO_AO_OPT_1", "1").strip().lower() not in {"0", "false", "off", ""}
+
+
 def make_anchors(feats, strides, grid_cell_offset=0.5):
     """Generate anchors from features."""
+    key = None
+    if _AO_OPT_14 and feats is not None and hasattr(feats[0], "shape"):
+        key = (tuple(tuple(f.shape[2:]) for f in feats), str(feats[0].device), feats[0].dtype, grid_cell_offset)
+        cached = _OPT_13.get(key)
+        if cached is not None:
+            return cached
     anchor_points, stride_tensor = [], []
     assert feats is not None
     dtype, device = feats[0].dtype, feats[0].device
@@ -342,7 +355,10 @@ def make_anchors(feats, strides, grid_cell_offset=0.5):
         sy, sx = torch.meshgrid(sy, sx, indexing="ij") if TORCH_1_10 else torch.meshgrid(sy, sx)
         anchor_points.append(torch.stack((sx, sy), -1).view(-1, 2))
         stride_tensor.append(torch.full((h * w, 1), stride, dtype=dtype, device=device))
-    return torch.cat(anchor_points), torch.cat(stride_tensor)
+    out = torch.cat(anchor_points), torch.cat(stride_tensor)
+    if key is not None:
+        _OPT_13[key] = out
+    return out
 
 
 def dist2bbox(distance, anchor_points, xywh=True, dim=-1):
